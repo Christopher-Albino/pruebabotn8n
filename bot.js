@@ -5,7 +5,7 @@ const { Telegraf } = require("telegraf");
 const { chromium } = require("playwright");
 
 // 🔹 Pega AQUÍ tu token de BotFather (SOLO el token, sin URLs)
-const BOT_TOKEN = "8423810668:AAG15o0LuksGcYlPRzstyR_aYV1o0tkb3ug";
+const BOT_TOKEN = process.env.BOT_TOKEN;
 
 if (!BOT_TOKEN) {
   console.error("❌ Falta configurar BOT_TOKEN en bot.js");
