@@ -4,11 +4,11 @@
 const { Telegraf } = require("telegraf");
 const { chromium } = require("playwright");
 
-// 🔹 Pega AQUÍ tu token de BotFather (SOLO el token, sin URLs)
+// 🔹 Token desde variables de entorno (Railway / .env)
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 if (!BOT_TOKEN) {
-  console.error("❌ Falta configurar BOT_TOKEN en bot.js");
+  console.error("❌ Falta configurar BOT_TOKEN (variable de entorno).");
   process.exit(1);
 }
 
@@ -34,6 +34,36 @@ bot.use((ctx, next) => {
 });
 
 // ------------ FUNCIONES AUXILIARES ------------
+
+// Cerrar el modal de CUESTIONARIO si aparece
+async function cerrarModalCuestionario(page) {
+  try {
+    const dialog = page
+      .locator('div[role="dialog"]')
+      .filter({ hasText: "CUESTIONARIO" });
+
+    if (await dialog.count()) {
+      console.log("Cuestionario detectado, cerrando...");
+      // click fuera del recuadro + Escape
+      await page.mouse.click(10, 10);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(1000);
+    } else {
+      console.log("No apareció el cuestionario.");
+    }
+  } catch (e) {
+    console.log("No se pudo manejar el cuestionario (no pasa nada):", e.message);
+  }
+}
+
+// Ir siempre a la página de Cursos Matriculados
+async function irACursosMatriculados(page) {
+  console.log("Navegando a Cursos Matriculados...");
+  await page.goto(
+    "https://alumnos.uni.edu.pe/informacion-academica/cursos",
+    { waitUntil: "networkidle", timeout: 60000 }
+  );
+}
 
 // Hace login y deja la página en "Cursos Matriculados"
 async function loginYIrACursos(codigo, pass) {
@@ -61,33 +91,18 @@ async function loginYIrACursos(codigo, pass) {
 
   console.log("En HOME. Yendo a Cursos Matriculados...");
   await irACursosMatriculados(page);
-  const cursos = await obtenerCursosMatriculados(page);
-
-  await page.waitForTimeout(2000);
-
-  // Cerrar cuestionario si aparece
-  try {
-    const cuestionario = page.getByText("Resolver Cuestionario", { exact: false });
-    if (await cuestionario.count()) {
-      console.log("Cuestionario detectado, cerrando...");
-      await page.mouse.click(10, 10); // click fuera
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(1000);
-    }
-  } catch (e) {
-    console.log("No se pudo manejar el cuestionario:", e.message);
-  }
+  await cerrarModalCuestionario(page);
 
   return { browser, page };
 }
 
 // Devuelve una sesión (browser + page) ya logueada para ese chat.
-// Si no existe o se desconectó, hace login.
+// Si no existe o la página se cerró, hace login.
 async function obtenerSesion(chatId, codigo, pass) {
   let ses = sesiones[chatId];
 
-  // Reutilizar si el browser sigue conectado
-  if (ses && ses.browser && ses.browser.isConnected && ses.browser.isConnected()) {
+  // Reutilizar si el browser y la page siguen vivos
+  if (ses && ses.browser && ses.page && !ses.page.isClosed()) {
     console.log("♻️ Reutilizando sesión existente para chat", chatId);
     return ses;
   }
@@ -98,92 +113,35 @@ async function obtenerSesion(chatId, codigo, pass) {
   return sesiones[chatId];
 }
 
-// Ir siempre a la página de Cursos Matriculados
-async function irACursosMatriculados(page) {
-  console.log("Navegando a Cursos Matriculados...");
-  await page.goto(
-    'https://alumnos.uni.edu.pe/informacion-academica/cursos',
-    { waitUntil: 'networkidle', timeout: 60000 }
-  );
-}
-
-
 // 1) Obtener lista de cursos desde la tabla de Cursos Matriculados
 async function obtenerCursosMatriculados(page) {
-  // Asegurarnos de estar en la página correcta
   await irACursosMatriculados(page);
+  await cerrarModalCuestionario(page);
 
   console.log("Buscando tabla de cursos matriculados...");
 
-  // Buscar la tabla que tenga las cabeceras CURSO y NOMBRE
-  const tablaCursos = page.locator('table').filter({
-    hasText: 'CURSO'
-  }).filter({
-    hasText: 'NOMBRE'
-  }).first();
-
-  await tablaCursos.waitFor({ state: 'visible', timeout: 60000 });
-
-  const filas = tablaCursos.locator('tbody tr');
-  const count = await filas.count();
-  const cursos = [];
-
-  for (let i = 0; i < count; i++) {
-    const celdas = filas.nth(i).locator('td');
-    const codCurso = (await celdas.nth(0).innerText()).trim();
-    const nombre   = (await celdas.nth(1).innerText()).trim();
-
-    // Filtrar filas raras (horarios, vacías, etc.)
-    if (!codCurso || !nombre) continue;
-
-    // Código tipo BEG01-U, SW505-U, etc.
-    if (!/[A-Z]{2,}\d{2,}-[A-Z]/.test(codCurso)) continue;
-
-    cursos.push({
-      cod: codCurso,
-      nombre,
-      index: i,
-    });
-  }
-
-  console.log("Cursos detectados (filtrados):", cursos);
-  return cursos;
-}
-
-
-  // Cerrar cuestionario si aparece (por si acaso)
-  try {
-    const cuestionario = page.getByText("Resolver Cuestionario", { exact: false });
-    if (await cuestionario.count()) {
-      console.log("Cuestionario detectado, cerrando...");
-      await page.mouse.click(10, 10);
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(1000);
-    }
-  } catch (e) {
-    console.log("No se pudo manejar el cuestionario:", e.message);
-  }
-
   const cursos = await page.evaluate(() => {
     const resultado = [];
-    const filas = Array.from(document.querySelectorAll("tbody tr"));
+    // Tomamos todas las filas de todas las tablas y filtramos por las que tienen btn-ver-curso
+    const filas = Array.from(document.querySelectorAll("table tbody tr"));
 
     filas.forEach((fila) => {
+      const btn = fila.querySelector("button.btn-ver-curso");
+      if (!btn) return; // ignorar filas sin botón de “ver curso”
+
       const celdas = fila.querySelectorAll("td");
       if (celdas.length < 2) return;
 
-      const cod = (celdas[0].innerText || "").trim(); // BEG01-U
-      const nom = (celdas[1].innerText || "").trim(); // ECONOMIA GENERAL
+      const cod = (celdas[0]?.innerText || "").trim(); // BEG01-U
+      const nom = (celdas[1]?.innerText || "").trim(); // ECONOMIA GENERAL
 
-      // Ignorar filas sin letras (horario tipo "07 - 08")
-      if (!/[A-Z]/i.test(cod)) return;
+      if (!cod || !nom) return;
 
-      const btn = fila.querySelector("button.btn-ver-curso");
-      const codcur = btn?.getAttribute("data-codcur") || "";
-      const seccion = btn?.getAttribute("data-seccion") || "";
-      const codper = btn?.getAttribute("data-codper") || "";
+      const codcur = btn.getAttribute("data-codcur") || "";
+      const seccion = btn.getAttribute("data-seccion") || "";
+      const codper = btn.getAttribute("data-codper") || "";
 
-      // 👇 ya no mostramos (Obligatorio) ni otros tipos
+      // Nombre visible sin "(Obligatorio)"
       const nombreVisible = `${cod} - ${nom}`;
 
       resultado.push({
@@ -198,6 +156,14 @@ async function obtenerCursosMatriculados(page) {
   });
 
   console.log("Cursos detectados (filtrados):", cursos);
+  return cursos;
+}
+
+// Función de alto nivel usada por /notas
+async function obtenerCursos(chatId, codigo, pass) {
+  const { page } = await obtenerSesion(chatId, codigo, pass);
+  const cursos = await obtenerCursosMatriculados(page);
+  cursosPorChat[chatId] = cursos;
   return cursos;
 }
 
@@ -260,10 +226,6 @@ async function obtenerDetalleCurso(chatId, codigo, pass, metaCurso) {
   });
 
   console.log("Notas obtenidas:", notas);
-
-  // No hace falta volver atrás; si luego se llama a /notas,
-  // obtenerCursos volverá a navegar a la página de cursos.
-
   return notas;
 }
 
@@ -298,7 +260,9 @@ bot.command("notas", async (ctx) => {
   const creds = credenciales[chatId];
   if (!creds) {
     console.log("⚠️ /notas sin credenciales");
-    return ctx.reply("Primero usa /login para registrar tu código UNI y contraseña DIRCE.");
+    return ctx.reply(
+      "Primero usa /login para registrar tu código UNI y contraseña DIRCE."
+    );
   }
 
   await ctx.reply(
@@ -356,7 +320,8 @@ bot.on("text", async (ctx) => {
       if (texto === "1") {
         estado.paso = "password";
         return ctx.reply(
-          "Ahora escribe tu *contraseña DIRCE*.\n\n⚠️ Este bot no guarda tu contraseña:\nsolo la usa localmente en tu máquina para iniciar sesión en INTRALU.",
+          "Ahora escribe tu *contraseña DIRCE*.\n\n⚠️ Este bot no guarda tu contraseña:\n" +
+            "solo la usa localmente en tu máquina para iniciar sesión en INTRALU.",
           { parse_mode: "Markdown" }
         );
       } else if (texto === "2") {
@@ -417,10 +382,7 @@ bot.on("text", async (ctx) => {
     }
 
     const curso = cursos[idx];
-    console.log(
-      `ℹ️ Usuario pidió detalle del curso #${idx + 1}:`,
-      curso
-    );
+    console.log(`ℹ️ Usuario pidió detalle del curso #${idx + 1}:`, curso);
 
     const creds = credenciales[chatId];
     if (!creds) {
@@ -461,11 +423,12 @@ bot.on("text", async (ctx) => {
     }
   }
 
-  // 3) Mensajes random fuera de flujo (si quieres, puedes contestar algo aquí)
+  // 3) Mensajes random fuera de flujo
+  // Si quieres puedes responder algo genérico aquí
   // ctx.reply("Usa /login, /notas o envía un número de curso.");
 });
 
-// Cerrar navegadores al terminar el proceso (Ctrl+C)
+// Cerrar navegadores al terminar el proceso (Ctrl+C / stop en Railway)
 process.on("SIGINT", async () => {
   console.log("Cerrando sesiones...");
   for (const chatId of Object.keys(sesiones)) {
