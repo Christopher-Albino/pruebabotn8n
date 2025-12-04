@@ -60,9 +60,9 @@ async function loginYIrACursos(codigo, pass) {
   await page.waitForURL("**/home", { timeout: 30000 });
 
   console.log("En HOME. Yendo a Cursos Matriculados...");
-  await page.getByText("Información Académica", { exact: true }).click();
-  await page.getByText("Cursos Matriculados", { exact: true }).click();
-  await page.waitForURL("**/informacion-academica/cursos", { timeout: 30000 });
+  await irACursosMatriculados(page);
+  const cursos = await obtenerCursosMatriculados(page);
+
   await page.waitForTimeout(2000);
 
   // Cerrar cuestionario si aparece
@@ -98,20 +98,58 @@ async function obtenerSesion(chatId, codigo, pass) {
   return sesiones[chatId];
 }
 
+// Ir siempre a la página de Cursos Matriculados
+async function irACursosMatriculados(page) {
+  console.log("Navegando a Cursos Matriculados...");
+  await page.goto(
+    'https://alumnos.uni.edu.pe/informacion-academica/cursos',
+    { waitUntil: 'networkidle', timeout: 60000 }
+  );
+}
+
+
 // 1) Obtener lista de cursos desde la tabla de Cursos Matriculados
-async function obtenerCursos(chatId, codigo, pass) {
-  const { page } = await obtenerSesion(chatId, codigo, pass);
+async function obtenerCursosMatriculados(page) {
+  // Asegurarnos de estar en la página correcta
+  await irACursosMatriculados(page);
 
-  console.log("Leyendo cursos desde la tabla de Cursos Matriculados...");
+  console.log("Buscando tabla de cursos matriculados...");
 
-  // Asegurar que estamos en la página de cursos
-  if (!page.url().includes("/informacion-academica/cursos")) {
-    console.log("No estamos en /cursos, navegando de nuevo al menú...");
-    await page.getByText("Información Académica", { exact: true }).click();
-    await page.getByText("Cursos Matriculados", { exact: true }).click();
-    await page.waitForURL("**/informacion-academica/cursos", { timeout: 30000 });
-    await page.waitForTimeout(2000);
+  // Buscar la tabla que tenga las cabeceras CURSO y NOMBRE
+  const tablaCursos = page.locator('table').filter({
+    hasText: 'CURSO'
+  }).filter({
+    hasText: 'NOMBRE'
+  }).first();
+
+  await tablaCursos.waitFor({ state: 'visible', timeout: 60000 });
+
+  const filas = tablaCursos.locator('tbody tr');
+  const count = await filas.count();
+  const cursos = [];
+
+  for (let i = 0; i < count; i++) {
+    const celdas = filas.nth(i).locator('td');
+    const codCurso = (await celdas.nth(0).innerText()).trim();
+    const nombre   = (await celdas.nth(1).innerText()).trim();
+
+    // Filtrar filas raras (horarios, vacías, etc.)
+    if (!codCurso || !nombre) continue;
+
+    // Código tipo BEG01-U, SW505-U, etc.
+    if (!/[A-Z]{2,}\d{2,}-[A-Z]/.test(codCurso)) continue;
+
+    cursos.push({
+      cod: codCurso,
+      nombre,
+      index: i,
+    });
   }
+
+  console.log("Cursos detectados (filtrados):", cursos);
+  return cursos;
+}
+
 
   // Cerrar cuestionario si aparece (por si acaso)
   try {
