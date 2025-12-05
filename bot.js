@@ -160,12 +160,40 @@ async function obtenerCursosMatriculados(page) {
 }
 
 // Función de alto nivel usada por /notas
+// Función de alto nivel usada por /notas
 async function obtenerCursos(chatId, codigo, pass) {
-  const { page } = await obtenerSesion(chatId, codigo, pass);
-  const cursos = await obtenerCursosMatriculados(page);
+  let ses = await obtenerSesion(chatId, codigo, pass);
+  let { page, browser } = ses;
+
+  // 🔹 Primer intento con la sesión actual
+  let cursos = await obtenerCursosMatriculados(page);
+
+  // Si no hay cursos o nos mandaron de vuelta al login, probamos reloguear
+  if (!cursos.length || page.url().includes("/login")) {
+    console.log("⚠️ No se encontraron cursos o la sesión parece expirada. Relogueando...");
+
+    try {
+      await browser.close();
+    } catch (e) {
+      console.log("Error cerrando browser viejo:", e.message);
+    }
+
+    delete sesiones[chatId];
+
+    // Nuevo login desde cero
+    const sesNueva = await loginYIrACursos(codigo, pass);
+    sesiones[chatId] = sesNueva;
+    page = sesNueva.page;
+    browser = sesNueva.browser;
+
+    // Segundo intento ahora con sesión fresca
+    cursos = await obtenerCursosMatriculados(page);
+  }
+
   cursosPorChat[chatId] = cursos;
   return cursos;
 }
+
 
 // 2) Obtener detalle de notas de un curso específico usando URL directa
 async function obtenerDetalleCurso(chatId, codigo, pass, metaCurso) {
